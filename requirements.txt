@@ -1,0 +1,14 @@
+av
+duckdb
+scipy
+numpy
+pandas
+opencv-python-headless
+scikit-learn
+shapely
+matplotlib
+openpyxl
+fastapi
+uvicorn
+pydantic
+playwright

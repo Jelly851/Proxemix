@@ -1,0 +1,8 @@
+{
+    "approximate": true,
+    "note": "APPROXIMATE. Grand Central's main concourse is publicly reported at roughly 275ft x 120ft (83.8m x 36.6m). This camera's reference.jpg (1920x1080) covers a sub-region of that floor - not the whole concourse - so the four points below are the visible floor's back wall and near edge, assigned a hand-estimated real-world span (34m across the back wall, 45m of depth toward the camera) derived from that public figure and the image's own perspective. This is NOT a surveyed calibration; it stands in for what a user would normally supply by clicking 4 points and entering one measured distance on site. The calibration module itself (proxemix/calibration.py) is exact given exact inputs - only these specific numbers are approximate.",
+    "image_points": [[390, 300], [1560, 300], [1870, 1070], [60, 1070]],
+    "world_points_m": [[0, 0], [34, 0], [34, 45], [0, 45]],
+    "frame_width": 1920,
+    "frame_height": 1080
+}

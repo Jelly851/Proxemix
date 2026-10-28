@@ -1,0 +1,7 @@
+{
+    "note": "Demo bundle calibration — the synthetic 640x480 ingest test video has no real floor, so this is a clean pure-scale mapping (80px = 1m) rather than an estimate: the whole frame is declared an 8m x 6m room, corner to corner.",
+    "image_points": [[0, 0], [640, 0], [640, 480], [0, 480]],
+    "world_points_m": [[0, 0], [8, 0], [8, 6], [0, 6]],
+    "frame_width": 640,
+    "frame_height": 480
+}

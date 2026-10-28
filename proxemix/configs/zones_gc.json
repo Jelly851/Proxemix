@@ -1,0 +1,22 @@
+{
+    "note": "Zones are user-supplied in the real product; these four are plausible Grand Central zones picked by eye from the dataset's reference.jpg and the choke/dwell heatmaps in Body/app/outputs/hackathon tests/ie-psych/ (the information booth's cold spot, the two hot bands at the north staircase openings, and the east-side shop corridor). Polygons are in floor-plane meters, projected through proxemix/configs/calibration_gc.json's homography - so they inherit that calibration's approximate accuracy.",
+    "frame": "floor_meters",
+    "zones": [
+        {
+            "name": "info_booth",
+            "polygon_m": [[12.29, 14.43], [17.96, 14.43], [17.91, 27.05], [12.88, 27.05]]
+        },
+        {
+            "name": "west_doorway",
+            "polygon_m": [[4.65, 0.0], [12.5, 0.0], [12.89, 10.0], [5.66, 10.0]]
+        },
+        {
+            "name": "east_doorway",
+            "polygon_m": [[16.27, 0.0], [24.99, 0.0], [24.41, 10.0], [16.37, 10.0]]
+        },
+        {
+            "name": "east_side_corridor",
+            "polygon_m": [[36.09, 12.26], [41.34, 12.26], [36.97, 33.36], [32.69, 33.36]]
+        }
+    ]
+}

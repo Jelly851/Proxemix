@@ -1,0 +1,14 @@
+{
+    "note": "Demo bundle zones over the synthetic 8m x 6m room (see calibration_demo.json): a left and right rectangle, leaving a corridor between them.",
+    "frame": "floor_meters",
+    "zones": [
+        {
+            "name": "left_zone",
+            "polygon_m": [[0.5, 1.0], [2.5, 1.0], [2.5, 5.0], [0.5, 5.0]]
+        },
+        {
+            "name": "right_zone",
+            "polygon_m": [[5.5, 1.0], [7.5, 1.0], [7.5, 5.0], [5.5, 5.0]]
+        }
+    ]
+}

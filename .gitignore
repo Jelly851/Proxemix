@@ -1,0 +1,7 @@
+data/
+outputs/
+venv/
+__pycache__/
+*.duckdb
+*.pyc
+scratch/
