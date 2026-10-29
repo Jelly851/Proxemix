@@ -1,0 +1,18 @@
+{
+    "note": "Zones are user-supplied in the real product; these three are plausible Eminonu plaza zones picked by eye from frame_00045 of the plaza clip, expressed as bands of the calibrated floor plane (calibration_plaza.json's world frame: x 0-31 m across the far stall line, y 0 at the stalls growing toward the camera). stall_front is the band of tables and vendor stalls, open_plaza the free pavement, near_walkway the foreground walking corridor.",
+    "frame": "floor_meters",
+    "zones": [
+        {
+            "name": "stall_front",
+            "polygon_m": [[-2.0, -1.0], [33.0, -1.0], [33.0, 5.0], [-2.0, 5.0]]
+        },
+        {
+            "name": "open_plaza",
+            "polygon_m": [[-2.0, 5.0], [33.0, 5.0], [33.0, 13.0], [-2.0, 13.0]]
+        },
+        {
+            "name": "near_walkway",
+            "polygon_m": [[-2.0, 13.0], [33.0, 13.0], [33.0, 20.0], [-2.0, 20.0]]
+        }
+    ]
+}

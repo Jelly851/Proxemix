@@ -105,7 +105,15 @@ SALSA_MIN_DURATION_S = groups_mod.DEFAULT_MIN_DURATION_S
 #              Proxemix capability: it is the upper bound the SAM-keypoint source
 #              in facing.py is aiming at, and it is what makes the published
 #              position+orientation number (F1 0.83) comparable.
-FACING_MODES = ("motion", "none", "oracle")
+#   "sam"    — a real measurement: facing derived from SAM 3.1 person+face
+#              detections on SALSA's own CAM1 video, built by
+#              `proxemix.salsa_sam_facing` and read from the CSV named by
+#              `--sam-facing-csv`. It is laid over the motion channel through
+#              `facing.apply_external_facing`, which is the seam facing.py was
+#              written around, so it fills exactly the rows motion left unknown.
+#              Cocktail party only — that is the part whose video was fetched.
+FACING_MODES = ("motion", "none", "oracle", "sam")
+DEFAULT_SAM_FACING_CSV = os.path.join("outputs", "salsa_sam_facing.csv")
 
 
 def _members(group_key):
@@ -314,7 +322,7 @@ def failure_analysis(gt_by_frame, det_by_frame, T, frames):
             "churn": churn_split}
 
 
-def add_facing_column(tracks, facing_mode):
+def add_facing_column(tracks, facing_mode, sam_facing=None):
     """Attach the facing channel the grouper reads, by the named source."""
     if facing_mode not in FACING_MODES:
         raise ValueError(f"facing mode must be one of {FACING_MODES}")
@@ -328,21 +336,45 @@ def add_facing_column(tracks, facing_mode):
         cov = facing_mod.facing_coverage(out)
         cov["mode"] = "oracle"
         return out, cov
+    if facing_mode == "sam":
+        if sam_facing is None or not len(sam_facing):
+            raise ValueError(
+                "--facing sam needs a facing table — build one with "
+                "`py -m proxemix.salsa_sam_facing facing` and point "
+                "--sam-facing-csv at it. This part may simply have no SAM run "
+                "(only the cocktail party's video was fetched).")
+        out = facing_mod.add_facing(tracks)
+        out = facing_mod.apply_external_facing(out, sam_facing, source="sam_face")
+        cov = facing_mod.facing_coverage(out)
+        cov["mode"] = "sam"
+        cov["sam_rows_supplied"] = int(len(sam_facing))
+        return out, cov
     out = facing_mod.add_facing(tracks)
     cov = facing_mod.facing_coverage(out)
     cov["mode"] = "motion"
     return out, cov
 
 
+def load_sam_facing(path, part=None):
+    """Read the table `proxemix.salsa_sam_facing` writes. Returns None when the
+    file has nothing for this part, so the caller can say so plainly."""
+    if not path or not os.path.exists(path):
+        return None
+    df = pd.read_csv(path, dtype={"track_id": str})
+    if part is not None and "part" in df.columns:
+        df = df[df["part"] == part]
+    return df.reset_index(drop=True) if len(df) else None
+
+
 def run_part(salsa_root, part, eps_m=GROUPS_DEFAULT_EPS_M,
              min_samples=GROUPS_DEFAULT_MIN_SAMPLES, thresholds=(2 / 3, 1.0),
              min_cardinality=2, persistence=False,
              method=GROUPS_DEFAULT_METHOD, facing_mode="motion",
-             grouper_kwargs=None):
+             grouper_kwargs=None, sam_facing=None):
     """Load one part, run Proxemix grouping over it, score it. Returns a dict."""
     tracks = load_salsa_tracks(salsa_root, part)
     gt = load_salsa_fformations(salsa_root, part, min_cardinality=min_cardinality)
-    tracks, facing_cov = add_facing_column(tracks, facing_mode)
+    tracks, facing_cov = add_facing_column(tracks, facing_mode, sam_facing=sam_facing)
 
     clusters = detect_frame_clusters(
         tracks, eps_m=eps_m, min_samples=min_samples, x_col="x_m", y_col="y_m",
@@ -571,9 +603,16 @@ def main():
                     help="how the o-space grouper builds candidate groups")
     ap.add_argument("--facing", default="motion", choices=FACING_MODES,
                     help="facing source: 'motion' (the shipped keyless "
-                         "estimator), 'none', or 'oracle' (SALSA's own annotated "
+                         "estimator), 'none', 'oracle' (SALSA's own annotated "
                          "body orientation - an upper bound, not a Proxemix "
-                         "capability)")
+                         "capability), or 'sam' (facing measured from SAM 3.1 "
+                         "person+face detections on SALSA's own video)")
+    ap.add_argument("--sam-facing-csv", default=DEFAULT_SAM_FACING_CSV,
+                    help="the table `proxemix.salsa_sam_facing facing` writes")
+    ap.add_argument("--parts", default="both",
+                    choices=("both",) + SALSA_PARTS,
+                    help="which SALSA part(s) to score; the SAM facing run "
+                         "covers the cocktail party only")
     ap.add_argument("--max-pair-m", type=float, default=None,
                     help="transitivity guard base (default from groups.py)")
     ap.add_argument("--max-pair-grow-m", type=float, default=None,
@@ -615,15 +654,20 @@ def main():
           f"{'   [groups.py DEFAULTS]' if is_default else '   [NON-DEFAULT]'}")
     print(f"facing source: {args.facing}"
           + ("   [UPPER BOUND - SALSA's own orientation annotation, not a "
-             "Proxemix capability]" if args.facing == "oracle" else ""))
+             "Proxemix capability]" if args.facing == "oracle" else "")
+          + (f"   [measured, from {args.sam_facing_csv}]"
+             if args.facing == "sam" else ""))
     print(f"singletons: {'included' if min_card == 1 else 'excluded'}; "
           f"persistence filter: {'on' if args.persistence else 'off'}\n")
 
+    parts = SALSA_PARTS if args.parts == "both" else (args.parts,)
     results = [run_part(args.salsa_root, p, eps_m=args.eps_m,
                         min_samples=args.min_samples, min_cardinality=min_card,
                         persistence=args.persistence, method=args.method,
-                        facing_mode=args.facing, grouper_kwargs=gk)
-               for p in SALSA_PARTS]
+                        facing_mode=args.facing, grouper_kwargs=gk,
+                        sam_facing=(load_sam_facing(args.sam_facing_csv, p)
+                                    if args.facing == "sam" else None))
+               for p in parts]
 
     for r in results:
         print(f"--- {r['label']} ({r['part']}) — {r['detector']} ---")
@@ -693,6 +737,7 @@ def main():
             "salsa_root": args.salsa_root,
             "eps_m": args.eps_m, "min_samples": args.min_samples,
             "method": args.method, "facing_mode": args.facing,
+            "parts_scored": list(parts),
             "grouper_kwargs": {k: v for k, v in gk.items()},
             "groups_py_defaults_used": is_default,
             "singletons_included": min_card == 1,

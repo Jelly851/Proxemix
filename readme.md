@@ -23,6 +23,32 @@ Requires `ffmpeg` on PATH (used for stage-1 re-encoding).
   B-frames (`-g 12 -bf 0 -movflags +faststart`); `extract_frames()` pulls frames at a fixed
   fps (default 5) via PyAV's native timestamps (not OpenCV seeking, which is known to land
   frames off). `run_ingest()` chains both and writes `frames/manifest.json`.
+* `proxemix/sam_video.py` — stage 2. Detect + track with SAM 3.1 on real footage, emitting the
+  same canonical `(track_id, frame, x, y)` table the Grand Central adapter emits, so every later
+  stage runs unchanged. Three routes, chosen by a headcount on sampled stills over the image
+  endpoint (no 16-object cap there): <=16 people take one video pass per concept and SAM's own
+  stable object ids *are* the tracks; >16 partitions the scene into spatially adjacent groups of
+  <=16 and runs one box-prompted video pass each, merged on box IoU over shared frames with
+  Hungarian assignment; `mode="image"` detects per frame and stitches here, for stills that are
+  not a clip. **Facing rides the same calls**: a second `"face"` pass per frame, each face box
+  paired to the person box containing it, the face's offset inside that box read as a coarse yaw
+  from camera-ward, and the result fed through `facing.py`'s `apply_external_facing()` seam —
+  which is what gives a *standing* person a facing direction. Cost is counted, not assumed
+  (`$2.50/1,000` images vs `$0.20/1,000` video frames off Meta's own pricing page, so the image
+  endpoint is 12.5x the price per frame and belongs on the headcount only); `max_usd` refuses the
+  call that would cross the cap before sending it. The key is read fresh per call, never stored
+  and scrubbed out of error text. `py -m proxemix.sam_video` self-tests the parser, client, spend
+  cap, stitcher, partitioning, cross-pass merge and facing with no key and no network;
+  `py -m proxemix.sam_video --frames DIR --out DIR` is the live run. **Every route is
+  proven against the hosted API (2026-10-27, $0.13 spent)**: 72 person boxes on a frame
+  whose ground truth holds 70; the video endpoint accepting a base64 data URL; the
+  16-object cap real (exactly 16 ids on that 72-person frame); 8 partitioned passes
+  merging to 72 tracks; and all 16 ids holding across a 6-frame pan whose predicted −24
+  px/frame of motion was measured at −24.0. **Measured limit on facing**: on an overhead
+  camera `"face"` returns 1 detection per 72 people and 4× upscaling does not recover
+  them, so the facing channel needs eye-level footage — `"head"` returns 54 of 72 on the
+  same frame. Full write-up, including the stride guard a live run forced:
+  `Octavia V6/Body/app/outputs/hackathon tests/proximix/sam video stage notes.md`.
 * `proxemix/grand_central_adapter.py` — loads the published Grand Central Station pedestrian
   trajectories (OpenTraj format: one `.txt` file per track under `.../GC/Annotation/`, flat
   `x, y, frame` triples) into the canonical `(track_id, frame, x, y)` table every later stage

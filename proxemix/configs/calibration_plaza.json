@@ -1,0 +1,8 @@
+{
+    "approximate": true,
+    "note": "APPROXIMATE, hand-estimated 2026-10-28 from frame_00045 of plaza_istanbul_27384913 (2560x1440). No surveyed measurements exist. Method: horizon read off the bridge/water line (~y=530); camera height ~3.8 m solved from a reference pedestrian (371 px tall, feet at y=1363, assumed 1.70 m); focal ~1900 px assumed (typical phone main camera, ~70 deg hfov); the four points are two ground lines (far line y=794 at the stall fronts, near line y=1344 across the open pavement) with world spans derived from those constants. Person-height yardsticks at both depths agree with the derived spans within ~15%. The world quad is a trapezoid, not a rectangle, because the image points were chosen with equal-ish pixel margins. Same role as calibration_gc.json: stands in for the user's four clicks plus one measured distance.",
+    "image_points": [[205, 794], [2355, 794], [2099, 1344], [538, 1344]],
+    "world_points_m": [[0.0, 0.0], [31.0, 0.0], [19.3, 18.4], [12.0, 18.4]],
+    "frame_width": 2560,
+    "frame_height": 1440
+}
