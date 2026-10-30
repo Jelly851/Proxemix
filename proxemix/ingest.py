@@ -44,7 +44,10 @@ def extract_frames(video_path, out_dir, fps=EXTRACT_FPS):
     stream = container.streams.video[0]
     stream.thread_type = "AUTO"
 
-    sample_period = Fraction(1, fps)
+    # `Fraction(1, fps)` refuses a float, so a bundle declaring fps 5.0 rather
+    # than 5 crashed here. Going through Fraction(fps) accepts both and keeps
+    # the exact rational arithmetic the frame-exact sampling depends on.
+    sample_period = 1 / Fraction(fps).limit_denominator(10000)
     next_sample_time = Fraction(0)
     manifest = []
     frame_idx = 0

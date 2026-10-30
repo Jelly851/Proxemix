@@ -20,7 +20,21 @@ from pydantic import BaseModel
 
 from .chat_stub import StubChatBackend
 from .demo_bundle import build_demo_bundle
+from .promptable import (
+    DEFAULT_MAX_FRAMES,
+    DEFAULT_STRIDE,
+    SearchError,
+    list_searches,
+    load_cached,
+)
+from .promptable import search as concept_search
 from .timecode import frame_citation
+
+# What one search request from the browser may spend, and what the whole server
+# may spend before it refuses. A text box wired straight to a paid API with no
+# ceiling is the one way this UI could cost real money by accident.
+SEARCH_MAX_USD_PER_REQUEST = 0.25
+SEARCH_MAX_USD_PER_SESSION = 2.00
 
 WEBUI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui")
 
@@ -48,6 +62,12 @@ class ChatRequest(BaseModel):
     question: str
 
 
+class SearchRequest(BaseModel):
+    concept: str
+    stride: int = DEFAULT_STRIDE
+    refresh: bool = False
+
+
 def create_app(bundle_dir):
     if not os.path.isdir(bundle_dir) or not os.path.exists(os.path.join(bundle_dir, "bundle_meta.json")):
         build_demo_bundle(bundle_dir)
@@ -62,6 +82,26 @@ def create_app(bundle_dir):
 
     db_path = os.path.join(bundle_dir, meta["db_file"])
     chat_backend = StubChatBackend()
+
+    # The bundle's own frame rate, not the module default. A citation rendered
+    # at 25 fps on this 5 fps clip names a moment five times too early, and the
+    # player would still seek correctly — so only the printed timestamp would
+    # lie. Every citation this API hands out is rendered at this rate.
+    fps = float(meta.get("fps") or 0) or None
+    spent = {"usd": 0.0}
+
+    def _cite(frame_start, frame_end):
+        return frame_citation(frame_start, frame_end, fps=fps)
+
+    def _fact_citations(fact_ids):
+        return [
+            {"fact_id": cid,
+             "frame_start": facts_by_id[cid]["frame_start"],
+             "frame_end": facts_by_id[cid]["frame_end"],
+             "citation": _cite(facts_by_id[cid]["frame_start"],
+                               facts_by_id[cid]["frame_end"])}
+            for cid in fact_ids if cid in facts_by_id
+        ]
 
     app = FastAPI(title="Proxemix demo UI")
     app.mount("/media", StaticFiles(directory=bundle_dir), name="media")
@@ -96,32 +136,67 @@ def create_app(bundle_dir):
             out.append({
                 **r,
                 "label": _event_label(r),
-                "citation": frame_citation(r["frame_start"], r["frame_end"])
+                "citation": _cite(r["frame_start"], r["frame_end"])
                 if r["frame_start"] is not None else None,
             })
         return out
 
     @app.get("/api/report")
     def api_report():
-        statements = []
-        for s in report_statements:
-            citations = [
-                {"fact_id": cid, "frame_start": facts_by_id[cid]["frame_start"],
-                 "frame_end": facts_by_id[cid]["frame_end"], "citation": facts_by_id[cid]["citation"]}
-                for cid in s["citations"] if cid in facts_by_id
-            ]
-            statements.append({"text": s["text"], "citations": citations})
+        statements = [
+            {"text": s["text"], "citations": _fact_citations(s["citations"])}
+            for s in report_statements
+        ]
         return {"statements": statements, "fact_sheet": fact_sheet}
 
     @app.post("/api/chat")
     def api_chat(req: ChatRequest):
         result = chat_backend.answer(req.question, fact_sheet)
-        citations = [
-            {"fact_id": cid, "frame_start": facts_by_id[cid]["frame_start"],
-             "frame_end": facts_by_id[cid]["frame_end"], "citation": facts_by_id[cid]["citation"]}
-            for cid in result["citations"] if cid in facts_by_id
-        ]
-        return {"answer": result["answer"], "citations": citations}
+        return {"answer": result["answer"],
+                "citations": _fact_citations(result["citations"])}
+
+    @app.get("/api/searches")
+    def api_searches():
+        """Concepts already run against this bundle — a repeat costs nothing."""
+        return {"searches": list_searches(bundle_dir),
+                "spent_usd": round(spent["usd"], 4),
+                "session_cap_usd": SEARCH_MAX_USD_PER_SESSION}
+
+    @app.post("/api/search")
+    def api_search(req: SearchRequest):
+        """Run a typed concept over this clip's frames and return cited hits.
+
+        A cached concept is returned without sending anything, so the spend
+        ceiling is only ever charged for genuinely new work. The ceiling itself
+        is checked before the call, not after: a text box wired to a paid API
+        has to refuse rather than report an overspend.
+        """
+        concept = (req.concept or "").strip()
+        if not concept:
+            return {"error": "Type something to search for."}
+
+        cached = None if req.refresh else load_cached(bundle_dir, concept, req.stride)
+        if cached is None and spent["usd"] >= SEARCH_MAX_USD_PER_SESSION:
+            return {"error": (
+                f"This session has spent ${spent['usd']:.2f} of its "
+                f"${SEARCH_MAX_USD_PER_SESSION:.2f} search budget. Restart the "
+                "server to search for something new, or ask for a concept "
+                "already run.")}
+
+        try:
+            result = concept_search(
+                bundle_dir, concept, stride=req.stride,
+                max_frames=DEFAULT_MAX_FRAMES,
+                max_usd=SEARCH_MAX_USD_PER_REQUEST,
+                use_cache=not req.refresh)
+        except SearchError as e:
+            return {"error": str(e)}
+        except Exception as e:                      # an API failure, surfaced
+            return {"error": f"{type(e).__name__}: {str(e)[:300]}"}
+
+        if not result.get("cached"):
+            spent["usd"] += float(result.get("cost_usd") or 0.0)
+        return {**result, "session_spent_usd": round(spent["usd"], 4)}
 
     return app
 

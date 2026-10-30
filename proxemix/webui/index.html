@@ -19,7 +19,19 @@
       <div class="tabs">
         <button class="tab-btn active" data-tab="events">Events</button>
         <button class="tab-btn" data-tab="report">Report</button>
+        <button class="tab-btn" data-tab="search">Search</button>
         <button class="tab-btn" data-tab="chat">Chat</button>
+      </div>
+
+      <div class="tab-panel hidden" id="tab-search">
+        <form id="search-form">
+          <input id="search-input" type="text" placeholder="anything — backpack, stroller, bicycle" autocomplete="off">
+          <button type="submit">Find</button>
+        </form>
+        <div id="search-status" class="meta-line"></div>
+        <ul id="search-list" class="item-list"></ul>
+        <div id="search-coverage" class="coverage"></div>
+        <div id="search-history" class="meta-line"></div>
       </div>
 
       <div class="tab-panel" id="tab-events">
