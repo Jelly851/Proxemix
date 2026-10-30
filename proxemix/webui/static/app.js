@@ -45,7 +45,9 @@ async function loadProjects() {
   const grid = $("project-grid");
   grid.innerHTML = "";
   const rows = data.projects || [];
-  $("projects-empty").classList.toggle("hidden", rows.length > 0);
+  $("projects-empty").classList.toggle("hidden", rows.length > 0 || !!data.demo);
+
+  if (data.demo) grid.appendChild(demoCard(data.demo));
 
   for (const p of rows) {
     const card = document.createElement("div");
@@ -87,6 +89,37 @@ async function loadProjects() {
 
     grid.appendChild(card);
   }
+}
+
+function demoCard(demo) {
+  // The plaza demo, offered rather than forced. It is read-only: the footage is
+  // already analyzed, so Media, Calibrate and Analyze stay shut on it.
+  const card = document.createElement("div");
+  card.className = "project-card demo";
+  const thumb = document.createElement("div");
+  thumb.className = "card-thumb";
+  thumb.textContent = "built-in example";
+  const name = document.createElement("div");
+  name.className = "card-name";
+  name.textContent = demo.name;
+  const state = document.createElement("div");
+  state.className = "card-state";
+  state.textContent = "analyzed — open to explore";
+  card.append(thumb, name, state);
+  card.addEventListener("click", () => openDemo(demo));
+  return card;
+}
+
+function openDemo(demo) {
+  PROJECT = null;
+  REVIEW_LOADED_FOR = null;
+  $("screen-projects").classList.add("hidden");
+  $("screen-workspace").classList.remove("hidden");
+  $("back-to-projects").classList.remove("hidden");
+  $("work-title").textContent = demo.name;
+  $("work-sub").textContent = "built-in example, read-only";
+  renderWorkspace();
+  showStage("review");
 }
 
 function describeProject(p) {
@@ -821,7 +854,12 @@ function renderSearchResult(data) {
     SEARCH_BOXES.get(d.frame).push({ x1: d.x1, y1: d.y1, x2: d.x2, y2: d.y2, conf: d.conf });
   }
 
-  const paid = data.cached ? "cached, nothing sent" : `$${data.cost_usd.toFixed(4)}`;
+  // A result that came back without a cost is a result something went wrong in.
+  // Reading .toFixed off it turned a server error into "Cannot read properties
+  // of undefined", which told Jayden nothing about what actually failed.
+  const paid = data.cached ? "cached, nothing sent"
+             : typeof data.cost_usd === "number" ? `$${data.cost_usd.toFixed(4)}`
+             : "cost unknown";
   status.textContent = data.found
     ? `${data.n_detections} hit(s) for "${data.concept}" across ${data.frames_with_hits} of ${data.n_frames_sampled} sampled frames — peak ${data.peak_count} in one frame (${paid})`
     : `No "${data.concept}" found on the sampled frames (${paid})`;
@@ -908,7 +946,7 @@ async function main() {
   startOverlayLoop();
 
   const data = await getJSON("/api/projects");
-  if (data.has_launch_bundle) {
+  if (data.auto_open) {
     // Opened on one bundle: skip the project manager entirely.
     $("screen-projects").classList.add("hidden");
     $("screen-workspace").classList.remove("hidden");

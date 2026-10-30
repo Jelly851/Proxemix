@@ -35,6 +35,8 @@ import duckdb
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from typing import List, Optional
+
 from pydantic import BaseModel
 
 from . import pipeline, projects
@@ -79,16 +81,20 @@ def _event_label(row):
     return f"{row['type']}: {row['actor_ids']}"
 
 
+# Every optional field is spelled Optional[...], not `x: str = None`. Pydantic
+# reads the bare form as "a string, defaulting to None" and then rejects an
+# explicit `null` in the body with a 422 — which is exactly how the Search tab
+# came back empty: the browser sends `project: null` when no project is open.
 class ChatRequest(BaseModel):
     question: str
-    project: str = None
+    project: Optional[str] = None
 
 
 class SearchRequest(BaseModel):
     concept: str
     stride: int = DEFAULT_STRIDE
     refresh: bool = False
-    project: str = None
+    project: Optional[str] = None
 
 
 class NewProject(BaseModel):
@@ -96,21 +102,21 @@ class NewProject(BaseModel):
 
 
 class CalibrationRequest(BaseModel):
-    image_points: list
-    rect_size_m: list = None
-    known_distance_m: float = None
-    world_points_m: list = None
-    frame_width: int = None
-    frame_height: int = None
+    image_points: List[list]
+    rect_size_m: Optional[List[float]] = None
+    known_distance_m: Optional[float] = None
+    world_points_m: Optional[List[list]] = None
+    frame_width: Optional[int] = None
+    frame_height: Optional[int] = None
 
 
 class ZonesRequest(BaseModel):
-    zones: list
+    zones: List[dict]
 
 
 class AnalyzeRequest(BaseModel):
     fps: float = 5.0
-    max_usd: float = None
+    max_usd: Optional[float] = None
 
 
 class BundleView:
@@ -184,7 +190,8 @@ def extract_poster(video_path, out_path):
     return None
 
 
-def create_app(bundle_dir=None, projects_dir=DEFAULT_PROJECTS_DIR):
+def create_app(bundle_dir=None, projects_dir=DEFAULT_PROJECTS_DIR,
+               auto_open_bundle=False):
     # The legacy single-bundle mode. Given a directory that is not yet built,
     # the synthetic fixture is built into it, exactly as before.
     launch_view = None
@@ -227,8 +234,25 @@ def create_app(bundle_dir=None, projects_dir=DEFAULT_PROJECTS_DIR):
 
     @app.get("/api/projects")
     def api_projects():
-        return {"projects": [_decorated(r) for r in projects.list_projects(projects_dir)],
-                "has_launch_bundle": launch_view is not None}
+        """Jayden's own projects, plus the launch bundle offered as a demo card.
+
+        `--bundle` used to make the app skip the project manager entirely, which
+        meant the launcher opened the plaza demo and he never saw any of the new
+        pages. The bundle now appears as one read-only entry in the list, and
+        only `--demo` reinstates the old skip-straight-there behaviour, which is
+        what the two browser proofs run against.
+        """
+        rows = [_decorated(r) for r in projects.list_projects(projects_dir)]
+        demo = None
+        if launch_view is not None and launch_view.ready():
+            demo = {"slug": None, "name": "Plaza demo", "demo": True,
+                    "video": True, "analysis": {"state": "done"},
+                    "stages": {"media": "locked", "calibrate": "locked",
+                               "analyze": "locked", "review": "done",
+                               "report": "done"}}
+        return {"projects": rows, "demo": demo,
+                "has_launch_bundle": launch_view is not None,
+                "auto_open": bool(auto_open_bundle and launch_view is not None)}
 
     @app.post("/api/projects")
     def api_create_project(req: NewProject):
@@ -509,12 +533,15 @@ def main():
     parser.add_argument("--bundle", default=None,
                         help="open one pre-built bundle directly, skipping projects")
     parser.add_argument("--projects", default=DEFAULT_PROJECTS_DIR)
+    parser.add_argument("--demo", action="store_true",
+                        help="open --bundle directly, skipping the project manager")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
 
     import uvicorn
-    app = create_app(args.bundle, projects_dir=args.projects)
+    app = create_app(args.bundle, projects_dir=args.projects,
+                     auto_open_bundle=args.demo)
     uvicorn.run(app, host=args.host, port=args.port)
 
 
