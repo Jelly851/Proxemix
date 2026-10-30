@@ -2,55 +2,169 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Proxemix demo</title>
+<title>Proxemix</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <h1>Proxemix — demo UI</h1>
-  <div class="layout">
-    <div class="player-col">
-      <div class="player-wrap" id="player-wrap">
-        <video id="video" controls></video>
-        <canvas id="overlay"></canvas>
-      </div>
-      <div id="bundle-meta" class="meta-line"></div>
-    </div>
-    <div class="side-col">
-      <div class="tabs">
-        <button class="tab-btn active" data-tab="events">Events</button>
-        <button class="tab-btn" data-tab="report">Report</button>
-        <button class="tab-btn" data-tab="search">Search</button>
-        <button class="tab-btn" data-tab="chat">Chat</button>
-      </div>
 
-      <div class="tab-panel hidden" id="tab-search">
-        <form id="search-form">
-          <input id="search-input" type="text" placeholder="anything — backpack, stroller, bicycle" autocomplete="off">
-          <button type="submit">Find</button>
-        </form>
-        <div id="search-status" class="meta-line"></div>
-        <ul id="search-list" class="item-list"></ul>
-        <div id="search-coverage" class="coverage"></div>
-        <div id="search-history" class="meta-line"></div>
-      </div>
+<!-- ===================== PROJECT MANAGER ===================== -->
+<div id="screen-projects" class="screen">
+  <header class="app-head">
+    <h1>Proxemix</h1>
+    <p class="tagline">Drop in footage. Get frame-cited behaviour.</p>
+  </header>
 
-      <div class="tab-panel" id="tab-events">
-        <ul id="event-list" class="item-list"></ul>
-      </div>
+  <form id="new-project-form" class="new-project">
+    <input id="new-project-name" type="text" placeholder="New project name" autocomplete="off">
+    <button type="submit">Create</button>
+  </form>
 
-      <div class="tab-panel hidden" id="tab-report">
-        <div id="report-body"></div>
-      </div>
-
-      <div class="tab-panel hidden" id="tab-chat">
-        <div id="chat-log"></div>
-        <form id="chat-form">
-          <input id="chat-input" type="text" placeholder="e.g. busiest zone?" autocomplete="off">
-          <button type="submit">Ask</button>
-        </form>
-      </div>
-    </div>
+  <div id="project-grid" class="project-grid"></div>
+  <div id="projects-empty" class="empty-note hidden">
+    No projects yet. Name one above to begin.
   </div>
-  <script src="/static/app.js"></script>
+</div>
+
+<!-- ===================== WORKSPACE ===================== -->
+<div id="screen-workspace" class="screen hidden">
+  <header class="work-head">
+    <button id="back-to-projects" class="ghost-btn">&lsaquo; Projects</button>
+    <span id="work-title"></span>
+    <span id="work-sub" class="meta-line"></span>
+  </header>
+
+  <!-- --------- MEDIA --------- -->
+  <section class="page hidden" id="page-media">
+    <div class="page-inner">
+      <h2>Media</h2>
+      <p class="page-why">The clip you want read. One fixed camera, daylight, people on a floor.</p>
+
+      <label id="drop-zone" class="drop-zone">
+        <input id="file-input" type="file" accept="video/*" hidden>
+        <span id="drop-label">Drop a video here, or click to choose one</span>
+        <div id="upload-bar" class="progress-track hidden"><div id="upload-fill" class="progress-fill"></div></div>
+      </label>
+
+      <div id="media-pool" class="media-pool"></div>
+    </div>
+  </section>
+
+  <!-- --------- CALIBRATE --------- -->
+  <section class="page hidden" id="page-calibrate">
+    <div class="page-inner">
+      <h2>Calibrate</h2>
+      <p class="page-why">
+        Click four corners of a rectangle on the ground, clockwise from the top-left,
+        then say how wide and deep it really is. This is what turns pixels into metres.
+      </p>
+
+      <div class="calib-layout">
+        <div class="calib-canvas-wrap">
+          <canvas id="calib-canvas"></canvas>
+        </div>
+        <div class="calib-side">
+          <ol id="calib-points" class="calib-points"></ol>
+          <div class="field-row">
+            <label>Width across<input id="calib-width" type="number" step="0.1" min="0.1" placeholder="metres"></label>
+            <label>Depth away<input id="calib-depth" type="number" step="0.1" min="0.1" placeholder="metres"></label>
+          </div>
+          <div class="btn-row">
+            <button id="calib-save" type="button">Save calibration</button>
+            <button id="calib-reset" type="button" class="ghost-btn">Start over</button>
+          </div>
+          <div id="calib-status" class="meta-line"></div>
+          <p class="page-why">
+            Skipping this is allowed. Distances then come out in pixels, and every
+            figure is labelled uncalibrated rather than pretending to be metres.
+          </p>
+          <button id="calib-skip" type="button" class="ghost-btn">Skip — I'll take pixels</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- --------- ANALYZE --------- -->
+  <section class="page hidden" id="page-analyze">
+    <div class="page-inner">
+      <h2>Analyze</h2>
+      <p class="page-why">Detect and track everyone, then turn the paths into events, facts and a report.</p>
+
+      <div class="analyze-row">
+        <label>Frames per second<input id="analyze-fps" type="number" step="0.5" min="1" max="15" value="5"></label>
+        <div id="analyze-estimate" class="estimate"></div>
+        <button id="analyze-start" type="button">Run analysis</button>
+      </div>
+
+      <ul id="analyze-steps" class="step-list"></ul>
+      <div id="analyze-status" class="meta-line"></div>
+    </div>
+  </section>
+
+  <!-- --------- REVIEW --------- -->
+  <section class="page hidden" id="page-review">
+    <div class="review-layout">
+      <div class="player-col">
+        <div class="player-wrap" id="player-wrap">
+          <video id="video" controls></video>
+          <canvas id="overlay"></canvas>
+        </div>
+        <div id="ribbon-wrap" class="ribbon-wrap">
+          <canvas id="ribbon"></canvas>
+        </div>
+        <div id="bundle-meta" class="meta-line"></div>
+      </div>
+      <div class="side-col">
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="events">Events</button>
+          <button class="tab-btn" data-tab="search">Search</button>
+          <button class="tab-btn" data-tab="chat">Chat</button>
+        </div>
+
+        <div class="tab-panel" id="tab-events">
+          <ul id="event-list" class="item-list"></ul>
+        </div>
+
+        <div class="tab-panel hidden" id="tab-search">
+          <form id="search-form">
+            <input id="search-input" type="text" placeholder="anything — backpack, stroller, bicycle" autocomplete="off">
+            <button type="submit">Find</button>
+          </form>
+          <div id="search-status" class="meta-line"></div>
+          <ul id="search-list" class="item-list"></ul>
+          <div id="search-coverage" class="coverage"></div>
+          <div id="search-history" class="meta-line"></div>
+        </div>
+
+        <div class="tab-panel hidden" id="tab-chat">
+          <div id="chat-log"></div>
+          <form id="chat-form">
+            <input id="chat-input" type="text" placeholder="e.g. busiest zone?" autocomplete="off">
+            <button type="submit">Ask</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- --------- REPORT --------- -->
+  <section class="page hidden" id="page-report">
+    <div class="page-inner">
+      <h2>Report</h2>
+      <div id="report-warning" class="warn-note hidden"></div>
+      <div id="report-body"></div>
+    </div>
+  </section>
+
+  <!-- --------- STAGE BAR --------- -->
+  <nav class="stage-bar" id="stage-bar">
+    <button class="stage-btn" data-stage="media"><span>Media</span></button>
+    <button class="stage-btn" data-stage="calibrate"><span>Calibrate</span></button>
+    <button class="stage-btn" data-stage="analyze"><span>Analyze</span></button>
+    <button class="stage-btn" data-stage="review"><span>Review</span></button>
+    <button class="stage-btn" data-stage="report"><span>Report</span></button>
+  </nav>
+</div>
+
+<script src="/static/app.js"></script>
 </body>
 </html>
