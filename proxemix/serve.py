@@ -218,6 +218,26 @@ def create_app(bundle_dir=None, projects_dir=DEFAULT_PROJECTS_DIR,
         return launch_view
 
     app = FastAPI(title="Proxemix")
+
+    @app.middleware("http")
+    async def no_store(request, call_next):
+        """The page and its script are never cached.
+
+        Jayden opened the app in two browser profiles on 2026-10-31 and got two
+        different applications: one served the new project manager, the other a
+        cached copy of the old single-bundle page. He reasonably read that as
+        the app being broken. A served file older than the file on disk is a lie
+        this app cannot afford to tell, and it is cheap to forbid outright —
+        everything here is local, so there is nothing to save by caching.
+        """
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.startswith("/static"):
+            response.headers["Cache-Control"] = "no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
     app.mount("/static", StaticFiles(directory=os.path.join(WEBUI_DIR, "static")),
               name="static")
     if bundle_dir:
