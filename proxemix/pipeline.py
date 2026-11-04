@@ -103,7 +103,7 @@ def run_pipeline(projects_dir, slug, fps=5.0, max_usd=None, concepts=None,
     from .ingest import extract_frames
     from .metrics_pipeline import run_metrics
     from .report_verifier import verify_and_render
-    from .report_writer import StubReportWriter
+    from .report_writer import MuseWonderReportWriter, StubReportWriter
     from .sam_video import SamVideoClient, run_sam_stage
 
     record = projects.load_project(projects_dir, slug)
@@ -253,7 +253,19 @@ def run_pipeline(projects_dir, slug, fps=5.0, max_usd=None, concepts=None,
     # --- report ------------------------------------------------------------
     emit("report", "running")
     try:
-        draft = StubReportWriter().draft(facts)
+        # Muse Wonder drafts the findings when a key is on disk, and the
+        # deterministic stub does when it is not — so this stage never fails
+        # for want of a model, and the verifier below judges either draft the
+        # same way.
+        writer = StubReportWriter()
+        try:
+            from .muse import MuseClient
+            client = MuseClient()
+            if client.key_present():
+                writer = MuseWonderReportWriter(client=client)
+        except Exception:
+            pass
+        draft = writer.draft(facts)
         statements, dropped, markdown = verify_and_render(
             draft, facts, title=f"Proxemix — {record['name']}")
         (d / "report.md").write_text(markdown, encoding="utf-8")

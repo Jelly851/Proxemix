@@ -40,21 +40,63 @@ class StubReportWriter(ReportWriter):
         return {"statements": statements}
 
 
+REPORT_PROMPT = """You are writing the findings section of an analysis report \
+about one video clip. Every measurement taken from the clip is listed below, and \
+they are the only material you have.
+
+Facts:
+{facts}
+
+Write 4 to 6 statements that a researcher or an operations manager would want \
+first. Lead with what the clip shows rather than with what was measured. Group \
+facts that belong to one finding into one statement and cite all of them. Leave \
+out anything that does not change what the reader would do.
+
+Rules:
+1. Every statement must rest on the facts above and cite the fact_id of each one \
+it uses. A statement citing nothing will be deleted before anyone reads it.
+2. Never state a number that is not in a fact you cite.
+3. One or two sentences per statement. Plain words. No markdown, no headings.
+
+Reply with JSON only, in this exact shape:
+{{"statements": [{{"text": "...", "citations": ["<fact_id>"]}}]}}"""
+
+
 class MuseWonderReportWriter(ReportWriter):
-    """Where the real model plugs in. Construction takes whatever client
-    the Muse Wonder integration needs; `draft()` would send the fact
-    sheet (not raw tracks — see the spec's stage 7 risk note on
-    in-context table size) and ask for narrative JSON in the same
-    `{"statements": [...]}` shape `StubReportWriter` already produces,
-    so swapping this in requires no change to `report_verifier.py` or
-    anything downstream of it.
+    """The findings report, drafted by muse-wonder-1.0 over the fact sheet.
+
+    Returns the same `{"statements": [{"text", "citations"}]}` shape
+    `StubReportWriter` produces, so `report_verifier.py` and everything
+    downstream are untouched. The verifier is load-bearing here rather than
+    decorative: it drops any fact_id the model invented, and deletes outright
+    any statement left with no real citation.
+
+    `fallback` keeps the report rendering when the model cannot be reached.
     """
 
-    def __init__(self, client=None):
+    def __init__(self, client=None, fallback=None):
         self.client = client
+        self.fallback = fallback or StubReportWriter()
 
     def draft(self, fact_sheet):
-        raise NotImplementedError(
-            "Muse Wonder integration not wired up yet — no hackathon API key exists. "
-            "Use StubReportWriter until it does."
-        )
+        if not fact_sheet or self.client is None:
+            return self.fallback.draft(fact_sheet)
+
+        from proxemix.muse import MuseError, render_fact_sheet
+
+        prompt = REPORT_PROMPT.format(facts=render_fact_sheet(fact_sheet))
+        try:
+            reply = self.client.complete_json(prompt, note="report",
+                                              max_output_tokens=3000)
+        except MuseError:
+            return self.fallback.draft(fact_sheet)
+
+        statements = []
+        for stmt in reply.get("statements") or []:
+            text = str(stmt.get("text") or "").strip()
+            cites = [str(c) for c in (stmt.get("citations") or [])]
+            if text:
+                statements.append({"text": text, "citations": cites})
+        if not statements:
+            return self.fallback.draft(fact_sheet)
+        return {"statements": statements}

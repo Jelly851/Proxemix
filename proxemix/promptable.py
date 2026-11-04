@@ -509,5 +509,69 @@ def main(argv=None):
     return 0
 
 
+# --- the query planner ------------------------------------------------------
+# `search` takes a concept SAM can segment — a short noun phrase like "backpack".
+# A person types a question instead: "is anyone carrying luggage?". The planner
+# is the one step between the two, and it is deliberately thin: it only renames
+# the question into concepts, and never decides whether something was found.
+
+PLAN_PROMPT = """A video search tool finds objects in footage. It takes one short \
+noun phrase at a time, the kind a segmentation model can find in a single frame, \
+such as "backpack", "red jacket", "wheelchair", "shopping cart".
+
+Someone typed this: {question}
+
+Give the 1 to 3 noun phrases worth searching for to answer them. Order them by \
+how directly each would answer the question.
+
+Rules:
+1. Each phrase must name something visible in a single frame. Never an action, a \
+count, a relationship between people, or anything that needs the whole clip.
+2. Three words at most per phrase. Lowercase.
+3. If the question asks about something that cannot be seen as an object, return \
+an empty list and say why in one sentence.
+
+Reply with JSON only, in this exact shape:
+{{"concepts": ["..."], "note": "..."}}"""
+
+MAX_PLANNED_CONCEPTS = 3
+
+
+def plan_concepts(question, client=None):
+    """A typed question becomes the concepts to run. Returns
+    `{"concepts": [str, ...], "note": str}`.
+
+    With no client, the question itself is the concept — which is what the
+    product did before the planner existed, so the feature degrades to its
+    old behaviour rather than to an error.
+    """
+    question = str(question or "").strip()
+    if not question:
+        return {"concepts": [], "note": "a search needs a question"}
+    if client is None:
+        return {"concepts": [question[:60]],
+                "note": "no model available — searched for your words as typed"}
+
+    from proxemix.muse import MuseError
+
+    try:
+        reply = client.complete_json(
+            PLAN_PROMPT.format(question=question[:500]),
+            note="plan", max_output_tokens=1200)
+    except MuseError:
+        return {"concepts": [question[:60]],
+                "note": "the planner could not be reached — searched for your "
+                        "words as typed"}
+
+    concepts = []
+    for raw in (reply.get("concepts") or [])[:MAX_PLANNED_CONCEPTS]:
+        concept = " ".join(str(raw).lower().split())[:60]
+        # Three words is the tool's own limit, not a style preference: a longer
+        # phrase is a sentence, and a sentence as a concept returns noise.
+        if concept and len(concept.split()) <= 3 and concept not in concepts:
+            concepts.append(concept)
+    return {"concepts": concepts, "note": str(reply.get("note") or "").strip()}
+
+
 if __name__ == "__main__":
     sys.exit(main())

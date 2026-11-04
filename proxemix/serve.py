@@ -40,7 +40,7 @@ from typing import List, Optional
 from pydantic import BaseModel
 
 from . import pipeline, projects
-from .chat_stub import StubChatBackend
+from .chat_stub import MuseWonderChatBackend, StubChatBackend
 from .demo_bundle import build_demo_bundle
 from .promptable import (
     DEFAULT_MAX_FRAMES,
@@ -48,6 +48,7 @@ from .promptable import (
     SearchError,
     list_searches,
     load_cached,
+    plan_concepts,
 )
 from .promptable import search as concept_search
 from .timecode import frame_citation
@@ -203,7 +204,21 @@ def create_app(bundle_dir=None, projects_dir=DEFAULT_PROJECTS_DIR,
 
     os.makedirs(projects_dir, exist_ok=True)
     views = {}
-    chat_backend = StubChatBackend()
+
+    # Muse Wonder answers the question box and plans typed searches when a key
+    # is on disk; both fall back to the keyword stub when it is not, so the
+    # server starts and the demo runs with no key at all.
+    muse_client = None
+    try:
+        from .muse import MuseClient
+        candidate = MuseClient()
+        if candidate.key_present():
+            muse_client = candidate
+    except Exception:
+        muse_client = None
+
+    chat_backend = (MuseWonderChatBackend(client=muse_client)
+                    if muse_client is not None else StubChatBackend())
     spent = {"usd": 0.0}
 
     def view_for(slug=None):
@@ -524,6 +539,23 @@ def create_app(bundle_dir=None, projects_dir=DEFAULT_PROJECTS_DIR,
             return {"error": "Type something to search for."}
         v = view_for(req.project)
 
+        # A typed question becomes concepts; a typed noun phrase is already one
+        # and is left exactly as written, so the planner can never quietly
+        # change a search that was unambiguous to begin with.
+        planned_from, plan_note, also_worth = None, "", []
+        if muse_client is not None and (concept.endswith("?")
+                                        or len(concept.split()) > 3):
+            plan = plan_concepts(concept, client=muse_client)
+            if plan["concepts"]:
+                planned_from = concept
+                concept = plan["concepts"][0]
+                also_worth = plan["concepts"][1:]
+                plan_note = plan.get("note") or ""
+            else:
+                return {"error": plan.get("note") or (
+                    "That isn't something a frame can show — try naming an "
+                    "object, like a backpack or a wheelchair.")}
+
         cached = None if req.refresh else load_cached(v.dir, concept, req.stride)
         if cached is None and spent["usd"] >= SEARCH_MAX_USD_PER_SESSION:
             return {"error": (
@@ -543,7 +575,9 @@ def create_app(bundle_dir=None, projects_dir=DEFAULT_PROJECTS_DIR,
 
         if not result.get("cached"):
             spent["usd"] += float(result.get("cost_usd") or 0.0)
-        return {**result, "session_spent_usd": round(spent["usd"], 4)}
+        return {**result, "session_spent_usd": round(spent["usd"], 4),
+                "planned_from": planned_from, "plan_note": plan_note,
+                "also_worth_searching": also_worth}
 
     return app
 
