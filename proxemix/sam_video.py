@@ -114,6 +114,7 @@ import pathlib
 import re
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -131,6 +132,8 @@ VIDEO_MAX_FRAMES = 15000       # ~10 min clip limit
 IMAGE_USD_PER_1K = 2.50
 VIDEO_USD_PER_1K = 0.20
 VIDEO_MIN_BILLED_FRAMES = 50   # "video requests incur a minimum charge of 50 frames"
+TRANSPORT_RETRIES = 2          # a dropped connection is not a failed request
+TRANSPORT_BACKOFF_SECONDS = 2.0
 
 # --- output grammar ----------------------------------------------------------
 # line ::= FRAME record ("," record)*   record ::= OBJECT_ID box mask
@@ -518,11 +521,28 @@ class SamVideoClient:
             "Accept": "text/event-stream",
         }
         payload = json.dumps(body).encode()
-        try:
-            status, text = self.transport(self.url, headers, payload, self.timeout)
-        except Exception as e:                       # network, DNS, timeout
-            raise SamError(f"{what}: {type(e).__name__}: "
-                           f"{str(e).replace(key, '<key>')}") from None
+        # A dropped connection is not a failed request, and a long run makes
+        # one near-certain: a 16-tile two-concept pass is 32 large uploads back
+        # to back, and the first live one lost 10 of them to connection resets
+        # and DNS failures on a flaky link. Retrying costs nothing when the
+        # send never landed, and the spend was already charged before sending,
+        # so a lost tile is paid for either way — the only question is whether
+        # anything comes back for the money.
+        last = None
+        for attempt in range(TRANSPORT_RETRIES + 1):
+            try:
+                status, text = self.transport(self.url, headers, payload,
+                                              self.timeout)
+                last = None
+                break
+            except Exception as e:                   # network, DNS, timeout
+                last = e
+                if attempt < TRANSPORT_RETRIES:
+                    time.sleep(TRANSPORT_BACKOFF_SECONDS * (2 ** attempt))
+        if last is not None:
+            raise SamError(f"{what}: {type(last).__name__}: "
+                           f"{str(last).replace(key, '<key>')} "
+                           f"(after {TRANSPORT_RETRIES + 1} attempts)") from None
         text = text.replace(key, "<key>")
         if status != 200:
             raise SamError(f"{what}: HTTP {status} — {text[:600]}")
@@ -1475,16 +1495,30 @@ def facing_summary(facing_df, n_person_rows=None):
 
 def headcount(client, frame_set, n_samples=3, concept=DEFAULT_PERSON_CONCEPT):
     """The front porch: the image endpoint on a few stills, which returns every
-    instance with no 16-object cap, so it is what routes the scene."""
-    counts = []
+    instance with no 16-object cap, so it is what routes the scene.
+
+    It also returns the **boxes**, not only the counts. They come back from
+    calls already being paid for, and they are what `tiling.plan_tiles` needs
+    to decide how finely this particular scene has to be read — so keeping
+    them makes the tile plan free. Discarding them, which this function used
+    to do, is what made the plan look like it needed its own calls.
+    """
+    counts, boxes = [], []
     for path in frame_set.sample(n_samples):
         text = client.segment_image(path, concept=concept)
         frames = parse_segmentation(text)
         n = sum(len(v) for v in frames.values())
         counts.append({"path": os.path.basename(path), "n": n})
+        for dets in frames.values():
+            for det in dets:
+                bx = det.get("bbox")
+                if bx:
+                    boxes.append([bx[0], bx[1], bx[2], bx[3],
+                                  float(det.get("confidence") or 0.0)])
     peak = max((c["n"] for c in counts), default=0)
     return {"samples": counts, "peak": int(peak),
-            "over_video_cap": bool(peak > VIDEO_OBJECT_CAP)}
+            "over_video_cap": bool(peak > VIDEO_OBJECT_CAP),
+            "boxes": boxes}
 
 
 def run_sam_stage(frames_dir=None, frame_set=None, video_path=None,
@@ -1496,7 +1530,7 @@ def run_sam_stage(frames_dir=None, frame_set=None, video_path=None,
                   include_absent_facing=True,
                   chunk_frames=DEFAULT_CHUNK_FRAMES,
                   chunk_overlap=DEFAULT_CHUNK_OVERLAP,
-                  clip_builder=None):
+                  clip_builder=None, tiled="auto"):
     """Stage 2 end to end: frames in, canonical rows + facing out.
 
     Returns a dict:
@@ -1562,6 +1596,28 @@ def run_sam_stage(frames_dir=None, frame_set=None, video_path=None,
                          concept=person_concept)
         summary["headcount"] = head
         mode = "video_partitioned" if head["over_video_cap"] else "video"
+
+        # How finely this scene needs reading, computed from the boxes the
+        # headcount already returned — no extra calls. Recorded rather than
+        # acted on: the measured gain (recall +4.3 points on SALSA at 2x2) is
+        # real, and so is the measured harm of over-splitting (precision 0.69
+        # -> 0.38 at 4x4), so the plan is reported for the run's record and
+        # the tiled pass is opted into deliberately. `tiling.py` holds the
+        # evidence for both halves.
+        try:
+            from proxemix.tiling import plan_tiles
+            hc_boxes = head.get("boxes") or []
+            if hc_boxes:
+                probe = frame_set.sample(1)
+                if probe:
+                    from PIL import Image
+                    pw, ph = Image.open(probe[0]).size
+                    plan = plan_tiles(hc_boxes, pw, ph)
+                    summary["tile_plan"] = plan["stats"]
+                    summary["tile_plan"]["tiles"] = [list(t) for t in plan["tiles"]]
+        except Exception as e:                      # never fail the stage for this
+            summary.setdefault("warnings", []).append(
+                f"tile plan not computed: {type(e).__name__}: {str(e)[:120]}")
     summary["mode_taken"] = mode + ("_chunked" if chunked and mode != "image" else "")
     if chunked and mode in ("video", "video_partitioned"):
         n_parts = max(1, -(-int((head or {}).get("peak", 1)) // VIDEO_OBJECT_CAP)) \
@@ -1569,6 +1625,22 @@ def run_sam_stage(frames_dir=None, frame_set=None, video_path=None,
         summary["estimates_usd"]["chunked_two_concepts"] = round(
             estimate_chunked_cost(n_frames, 2, n_parts, chunk_frames,
                                   chunk_overlap), 4)
+
+    # Tiling is taken when the plan asked for more than one tile. `tiled="auto"`
+    # follows the plan, True forces it, False refuses it. The plan itself is a
+    # ceiling rule measured against SALSA's annotations — 2x2 lifted recall
+    # 64.7% -> 69.1% with precision also up, and 4x4 halved precision — so
+    # following it is following evidence rather than a preference.
+    plan_tiles_list = [tuple(t) for t in
+                       (summary.get("tile_plan") or {}).get("tiles", [])]
+    use_tiles = False
+    if tiled is True:
+        use_tiles = bool(plan_tiles_list)
+    elif tiled == "auto":
+        use_tiles = len(plan_tiles_list) > 1
+    summary["tiled_taken"] = bool(use_tiles)
+    if use_tiles:
+        summary["mode_taken"] = summary["mode_taken"] + "_tiled"
 
     person_dets = pd.DataFrame()
     face_dets = pd.DataFrame()
@@ -1581,6 +1653,29 @@ def run_sam_stage(frames_dir=None, frame_set=None, video_path=None,
             face_dets = _image_pass(client, frame_set, face_concept, summary)
         rows, assignments = stitch_tracks(person_dets)
         person_dets = attach_track_ids(person_dets, assignments)
+
+    elif use_tiles:
+        # Tiles replace chunking for this pass rather than stacking with it:
+        # chunking exists to re-seed box prompts for people who arrive mid-clip,
+        # and a tile small enough to need no box prompts has nothing to re-seed.
+        # Stacking both would multiply calls by tiles x chunks for no measured
+        # gain, which is exactly the over-spending the ceiling rule prevents.
+        clip_dir = out_dir or tempfile.gettempdir()
+        os.makedirs(clip_dir, exist_ok=True)
+        person_dets, merge_drops, tinfo = _tiled_video_pass(
+            client, frame_set, person_concept, summary, plan_tiles_list,
+            fps=fps, clip_dir=clip_dir, clip_builder=clip_builder,
+            keep_clips=keep_clip, key=person_concept)
+        summary["tiles_person"] = tinfo
+        summary["cross_pass_duplicates_dropped"] = len(merge_drops)
+        if do_facing:
+            face_dets, face_drops, finfo = _tiled_video_pass(
+                client, frame_set, face_concept, summary, plan_tiles_list,
+                fps=fps, clip_dir=clip_dir, clip_builder=clip_builder,
+                keep_clips=keep_clip, key=face_concept)
+            summary["tiles_face"] = finfo
+            summary["cross_pass_duplicates_dropped_face"] = len(face_drops)
+        rows = _rows_from_boxes(person_dets)
 
     elif chunked and mode in ("video", "video_partitioned"):
         if video_path:
@@ -1813,6 +1908,151 @@ def _partitioned_video_pass(client, clip, frame_set, concept, summary,
                                                 warnings=summary["warnings"]))
     merged, drops = merge_passes(tables)
     return merged, drops, info
+
+
+def _crop_frames_for_tile(frame_set, tile, out_dir, quality=92):
+    """Write every frame cropped to one tile, and return the paths in order.
+
+    Clip index i of the cropped clip is frame i of the original, which is the
+    property that lets the original `frame_set` do the frame mapping for the
+    tile's detections — so no second mapping has to be kept in step.
+    """
+    from PIL import Image
+    os.makedirs(out_dir, exist_ok=True)
+    box = (int(tile[0]), int(tile[1]), int(tile[2]), int(tile[3]))
+    paths = []
+    for i, p in enumerate(frame_set.paths):
+        out = os.path.join(out_dir, f"frame_{i:06d}.jpg")
+        Image.open(p).crop(box).save(out, quality=quality)
+        paths.append(out)
+    return paths
+
+
+def _rebase_tile_boxes(table, tile, crop_w, crop_h):
+    """A tile's detection table, moved into full-frame pixel coordinates.
+
+    SAM reports in the coordinate space of what it was sent, so the scale is
+    taken from the crop's real size over the size reported back rather than
+    assumed equal — the same care `tiling.detect_in_tiles` takes. Getting this
+    wrong does not error; it silently puts every person in the wrong place.
+    """
+    if table is None or len(table) == 0:
+        return table
+    t = table.copy()
+    rw = t["frame_width"].replace(0, np.nan).fillna(crop_w)
+    rh = t["frame_height"].replace(0, np.nan).fillna(crop_h)
+    sx = crop_w / rw
+    sy = crop_h / rh
+    t["x1"] = t["x1"] * sx + tile[0]
+    t["x2"] = t["x2"] * sx + tile[0]
+    t["y1"] = t["y1"] * sy + tile[1]
+    t["y2"] = t["y2"] * sy + tile[1]
+    return t
+
+
+def _tiled_video_pass(client, frame_set, concept, summary, tiles, fps=5.0,
+                      clip_dir=None, clip_builder=None, keep_clips=False,
+                      key=None, link_iou=0.35):
+    """One video pass per tile, merged into one table in full-frame coordinates.
+
+    Why the video endpoint rather than an image call per tile per frame: the
+    image endpoint costs $2.50 per 1,000 calls against $0.20 per 1,000 video
+    frames, so tiling a 90-frame clip four ways costs about $0.14 through
+    video and about $0.90 through images. Same tiles, a sixth of the bill.
+
+    Two things fall out of tiling that are worth stating plainly:
+
+    * **Crowding per tile drops**, so tiles that would have needed box-prompt
+      partitioning to beat the 16-object cap often no longer do. Tiling and the
+      cap workaround pull in the same direction.
+    * **Identity is per tile**, so the cross-pass merge is what links a person
+      seen in two overlapping tiles. `merge_passes` already does exactly this
+      for partitions, and the tile case is the same shape with a lower overlap
+      threshold, because a copy cut at a tile edge shares less area with the
+      whole-body copy next door.
+
+    Returns `(table, drops, info)` to match `_partitioned_video_pass`.
+    """
+    key = key or concept
+    clip_dir = clip_dir or tempfile.gettempdir()
+    info = {"n_tiles": len(tiles), "tiles": [list(t) for t in tiles],
+            "per_tile": []}
+    tables = []
+
+    for idx, tile in enumerate(tiles):
+        crop_w = int(tile[2]) - int(tile[0])
+        crop_h = int(tile[3]) - int(tile[1])
+        tdir = os.path.join(clip_dir, f"tile_{idx:02d}_{key}")
+        try:
+            paths = _crop_frames_for_tile(frame_set, tile, tdir)
+        except Exception as e:
+            summary["warnings"].append(
+                f"tiled mode ({key}): tile {idx} could not be cropped — "
+                f"{type(e).__name__}: {str(e)[:120]}")
+            info["per_tile"].append({"tile": idx, "error": "crop failed"})
+            continue
+
+        clip = os.path.join(clip_dir, f"tile_{idx:02d}_{key}.mp4")
+        try:
+            (clip_builder or build_clip)(_PathsOnly(paths), clip, fps=fps)
+            text = client.segment_video(video_path=clip, concept=concept,
+                                        n_frames=len(paths))
+            frames = parse_segmentation(text)
+            summary["warnings"].extend(parse_warnings(frames))
+            table = detections_to_frame_table(frames, frame_set, concept=concept,
+                                              warnings=summary["warnings"])
+            table = _rebase_tile_boxes(table, tile, crop_w, crop_h)
+            tables.append(table)
+            info["per_tile"].append({"tile": idx, "rect": list(tile),
+                                     "detections": int(len(table))})
+        except Exception as e:
+            # One tile failing must not lose the pass: the remaining tiles
+            # still cover most of the frame, and the count of failures is
+            # reported so a thin result reads as thin.
+            summary["warnings"].append(
+                f"tiled mode ({key}): tile {idx} failed — "
+                f"{type(e).__name__}: {str(e)[:160]}")
+            info["per_tile"].append({"tile": idx, "error": str(e)[:160]})
+        finally:
+            if not keep_clips:
+                for p in paths:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+                try:
+                    os.rmdir(tdir)
+                except OSError:
+                    pass
+                if os.path.exists(clip):
+                    try:
+                        os.unlink(clip)
+                    except OSError:
+                        pass
+
+    if not tables:
+        return pd.DataFrame(), [], info
+    merged, drops = merge_passes(tables, iou_threshold=link_iou)
+    info["duplicates_dropped"] = len(drops)
+    info["n_tile_failures"] = sum(1 for t in info["per_tile"] if "error" in t)
+    return merged, drops, info
+
+
+class _PathsOnly:
+    """The two attributes `build_clip` reads, over a plain list of paths.
+
+    `build_clip` wants a frame set and uses only `.paths` and `len()`; the
+    cropped frames have no canonical numbering of their own because the
+    original frame set supplies it. Passing a real FrameSet here would mean
+    inventing canonical frames for the crops and then having two mappings that
+    could disagree.
+    """
+
+    def __init__(self, paths):
+        self.paths = list(paths)
+
+    def __len__(self):
+        return len(self.paths)
 
 
 def _chunked_video_pass(client, frame_set, concept, summary, partitioned=True,
